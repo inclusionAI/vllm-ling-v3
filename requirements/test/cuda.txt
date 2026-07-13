@@ -244,7 +244,7 @@ fastar==0.11.0
     # via
     #   fastapi
     #   fastapi-cloud-cli
-fastparquet==2024.11.0
+fastparquet==2026.5.0
     # via genai-perf
 fastrlock==0.8.2
     # via cupy-cuda12x
