@@ -1551,12 +1551,13 @@ def kda_gate_fwd_kernel(
     BT: tl.constexpr,
     BD: tl.constexpr,
     HAS_BIAS: tl.constexpr,
+    USE_LOWER_BOUND: tl.constexpr,
+    LOWER_BOUND: tl.constexpr,
 ):
     i_t, i_h = tl.program_id(0), tl.program_id(1)
     n_t = i_t * BT
 
     b_a = tl.load(A + i_h).to(tl.float32)
-    b_a = -tl.exp(b_a)
 
     stride_row = H * D
     stride_col = 1
@@ -1589,13 +1590,14 @@ def kda_gate_fwd_kernel(
         )
         b_g = b_g + b_bias[None, :]
 
-    # softplus(x, beta) = (1/beta) * log(1 + exp(beta * x))
-    # When beta * x > threshold, use linear approximation x
-    # Use threshold to switch to linear when beta*x > threshold
-    g_scaled = b_g * beta
-    use_linear = g_scaled > threshold
-    sp = tl.where(use_linear, b_g, (1.0 / beta) * log(1.0 + tl.exp(g_scaled)))
-    b_y = b_a * sp
+    if USE_LOWER_BOUND:
+        b_y = LOWER_BOUND * tl.sigmoid(tl.exp(b_a) * b_g)
+    else:
+        b_a = -tl.exp(b_a)
+        g_scaled = b_g * beta
+        use_linear = g_scaled > threshold
+        sp = tl.where(use_linear, b_g, (1.0 / beta) * log(1.0 + tl.exp(g_scaled)))
+        b_y = b_a * sp
 
     tl.store(y_ptr, b_y.to(y.dtype.element_ty), boundary_check=(0, 1))
 
@@ -1607,6 +1609,7 @@ def fused_kda_gate(
     g_bias: torch.Tensor | None = None,
     beta: float = 1.0,
     threshold: float = 20.0,
+    lower_bound: float | None = None,
 ) -> torch.Tensor:
     """
     Forward pass for KDA gate:
@@ -1614,6 +1617,7 @@ def fused_kda_gate(
       param A: [H] or [1, 1, H, 1]
       beta: softplus beta parameter
       threshold: softplus threshold parameter
+      lower_bound: if set, use safe gate: lower_bound * sigmoid(exp(A) * x)
       return  : [..., H, D]
     """
     orig_shape = g.shape[:-1]
@@ -1629,6 +1633,9 @@ def fused_kda_gate(
     def grid(meta):
         return (cdiv(T, meta["BT"]), H)
 
+    use_lower_bound = lower_bound is not None
+    lower_bound_val = lower_bound if use_lower_bound else 0.0
+
     kda_gate_fwd_kernel[grid](
         g,
         A,
@@ -1641,6 +1648,8 @@ def fused_kda_gate(
         head_k_dim,
         BD=next_power_of_2(head_k_dim),
         HAS_BIAS=g_bias is not None,
+        USE_LOWER_BOUND=use_lower_bound,
+        LOWER_BOUND=lower_bound_val,
     )
 
     y = y.view(*orig_shape, H, head_k_dim)
