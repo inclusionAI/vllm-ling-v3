@@ -790,6 +790,11 @@ _MULTIMODAL_EXAMPLE_MODELS = {
         },
     ),
     "BagelForConditionalGeneration": _HfExamplesInfo("ByteDance-Seed/BAGEL-7B-MoT"),
+    "BailingMoeV3VLForConditionalGeneration": _HfExamplesInfo(
+        "inclusionAI/Ling-3.0-VL",
+        trust_remote_code=True,
+        is_available_online=False,
+    ),
     "BeeForConditionalGeneration": _HfExamplesInfo(
         "Open-Bee/Bee-8B-RL",
         trust_remote_code=True,

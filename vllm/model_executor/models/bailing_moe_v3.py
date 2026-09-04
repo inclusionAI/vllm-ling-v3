@@ -61,6 +61,9 @@ from vllm.model_executor.layers.quantization.base_config import QuantizationConf
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.model_executor.layers.quantization.utils.quant_utils import is_layer_skipped
 from vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.model_executor.layers.rotary_embedding.bailing_mrope import (
+    get_bailing_mrope,
+)
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
@@ -182,6 +185,39 @@ def _build_rope_parameters(config: PretrainedConfig) -> dict | None:
         rope_parameters.update(rope_scaling)
 
     return rope_parameters or None
+
+
+def _build_mla_rotary_embedding(
+    config: PretrainedConfig,
+    head_size: int,
+) -> nn.Module:
+    rope_parameters = _build_rope_parameters(config)
+    if rope_parameters is not None and "mrope_section" in rope_parameters:
+        rope_type = rope_parameters.get("rope_type", "default")
+        if rope_type != "default":
+            raise ValueError(
+                f"Bailing M-RoPE only supports rope_type='default', got {rope_type!r}"
+            )
+        return get_bailing_mrope(
+            head_size=head_size,
+            rotary_dim=rope_parameters.get("rope_dim") or head_size,
+            max_position_embeddings=getattr(
+                config,
+                "max_position_embeddings",
+                8192,
+            ),
+            base=rope_parameters.get("rope_theta", 10000),
+            is_neox_style=False,
+            dtype=torch.get_default_dtype(),
+            mrope_section=tuple(rope_parameters["mrope_section"]),
+        )
+
+    return get_rope(
+        head_size=head_size,
+        max_position=getattr(config, "max_position_embeddings", 8192),
+        is_neox_style=False,
+        rope_parameters=rope_parameters,
+    )
 
 
 def _get_layer_swiglu_limit(limit_list: list | None, layer_idx: int) -> float | None:
@@ -537,11 +573,9 @@ class BailingMoeV3MLAAttention(nn.Module):
             prefix=f"{prefix}.dense",
         )
 
-        self.rotary_emb = get_rope(
+        self.rotary_emb = _build_mla_rotary_embedding(
+            config,
             head_size=self.qk_rope_head_dim,
-            max_position=getattr(config, "max_position_embeddings", 8192),
-            is_neox_style=False,
-            rope_parameters=_build_rope_parameters(config),
         )
         mla_modules = MLAModules(
             kv_a_layernorm=self.kv_a_layernorm,
