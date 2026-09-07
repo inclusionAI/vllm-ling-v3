@@ -62,6 +62,7 @@ from .qwen2_vl import (
 from .qwen3_vl import Qwen3_VisionTransformer
 from .utils import (
     AutoWeightsLoader,
+    WeightsMapper,
     _merge_multimodal_embeddings,
     maybe_prefix,
 )
@@ -284,6 +285,18 @@ class BailingMoeV3VLForConditionalGeneration(
         "qkv": ["qkv"],
     }
 
+    hf_to_vllm_mapper = BailingMoeV3ForCausalLM.hf_to_vllm_mapper | WeightsMapper(
+        orig_to_new_prefix={
+            # Match module names as well as parameter names for quantization.
+            "model.visual": "visual",
+            "model.linear_proj": "linear_proj",
+            "linear_proj.0": "linear_proj.linear_fc1",
+            "linear_proj.2": "linear_proj.linear_fc2",
+            "lm_head": "language_model.lm_head",
+            "model.": "language_model.model.",
+        }
+    )
+
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
         if modality.startswith("image"):
@@ -483,48 +496,8 @@ class BailingMoeV3VLForConditionalGeneration(
         return self.language_model.compute_logits(hidden_states)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        """Route each checkpoint component through its native loader."""
-
-        loaded_params: set[str] = set()
-
-        def language_weights() -> Iterable[tuple[str, torch.Tensor]]:
-            for name, weight in weights:
-                if name.startswith("model.visual."):
-                    visual_name = name.removeprefix("model.visual.")
-                    if hasattr(self.visual, "load_weights"):
-                        loaded = self.visual.load_weights([(visual_name, weight)])
-                        loaded_params.update(f"visual.{key}" for key in loaded)
-                    continue
-
-                projector_prefix = None
-                if name.startswith("linear_proj."):
-                    projector_prefix = "linear_proj."
-                elif name.startswith("model.linear_proj."):
-                    projector_prefix = "model.linear_proj."
-                if projector_prefix is not None:
-                    projector_name = name.removeprefix(projector_prefix)
-                    projector_name = projector_name.replace("0.", "linear_fc1.", 1)
-                    projector_name = projector_name.replace("2.", "linear_fc2.", 1)
-                    if hasattr(self.linear_proj, "linear_fc1"):
-                        loaded = AutoWeightsLoader(self.linear_proj).load_weights(
-                            [(projector_name, weight)]
-                        )
-                        loaded_params.update(f"linear_proj.{key}" for key in loaded)
-                    continue
-
-                if name.startswith("model.") or name.startswith("lm_head."):
-                    # Keep the original HF names so Bailing's packed QKV/MoE
-                    # mappings remain active.
-                    yield name, weight
-
-        if hasattr(self.language_model, "load_weights"):
-            loaded = self.language_model.load_weights(language_weights())
-            loaded_params.update(f"language_model.{key}" for key in loaded)
-        else:
-            # Consume the generator so tower-only loading still happens.
-            tuple(language_weights())
-
-        return loaded_params
+        loader = AutoWeightsLoader(self)
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
     def get_mm_mapping(self) -> MultiModelKeys:
         return MultiModelKeys.from_string_field(

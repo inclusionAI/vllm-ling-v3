@@ -61,9 +61,6 @@ from vllm.model_executor.layers.quantization.base_config import QuantizationConf
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.model_executor.layers.quantization.utils.quant_utils import is_layer_skipped
 from vllm.model_executor.layers.rotary_embedding import get_rope
-from vllm.model_executor.layers.rotary_embedding.bailing_mrope import (
-    get_bailing_mrope,
-)
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
@@ -198,19 +195,7 @@ def _build_mla_rotary_embedding(
             raise ValueError(
                 f"Bailing M-RoPE only supports rope_type='default', got {rope_type!r}"
             )
-        return get_bailing_mrope(
-            head_size=head_size,
-            rotary_dim=rope_parameters.get("rope_dim") or head_size,
-            max_position_embeddings=getattr(
-                config,
-                "max_position_embeddings",
-                8192,
-            ),
-            base=rope_parameters.get("rope_theta", 10000),
-            is_neox_style=False,
-            dtype=torch.get_default_dtype(),
-            mrope_section=tuple(rope_parameters["mrope_section"]),
-        )
+        rope_parameters["rope_type"] = "bailing_mrope"
 
     return get_rope(
         head_size=head_size,
