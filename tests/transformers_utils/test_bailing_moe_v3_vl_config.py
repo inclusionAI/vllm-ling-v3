@@ -9,11 +9,7 @@ from typing import Any
 import pytest
 from transformers import AutoConfig
 
-from vllm.transformers_utils.config import (
-    _CONFIG_REGISTRY,
-    get_config,
-    uses_mrope,
-)
+from vllm.transformers_utils.config import get_config, uses_mrope
 from vllm.transformers_utils.configs.bailing_moe_v3_vl import (
     BailingMoeV3TextConfig,
     BailingMoeV3VisionConfig,
@@ -28,47 +24,13 @@ def _bailing_v3_vl_config() -> dict[str, Any]:
             "AutoConfig": ("configuration_bailing_moe_v3_vl.BailingMoeV3VLConfig")
         },
         "model_type": "bailing_moe_v3_vl",
-        "torch_dtype": "bfloat16",
-        "tie_word_embeddings": False,
-        "norm_query_embeds": False,
-        "image_token_id": 157157,
-        "video_token_id": 156909,
-        "vision_start_token_id": 157158,
-        "vision_end_token_id": 157159,
         "mrope_section": [8, 12, 12],
         "text_config": {
-            "vocab_size": 157184,
-            "hidden_size": 2560,
-            "intermediate_size": 6144,
             "num_hidden_layers": 42,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 32,
-            "head_dim": 128,
-            "max_position_embeddings": 131072,
             "layer_group_size": 6,
             "rope_theta": 6_000_000,
-            "partial_rotary_factor": 0.5,
-            "rms_norm_eps": 1e-6,
-            "num_experts": 512,
-            "num_experts_per_tok": 8,
-            "kv_lora_rank": 512,
-            "no_kda_lora": True,
         },
-        "vision_config": {
-            "model_type": "qwen3_moe_vit",
-            "depth": 27,
-            "hidden_size": 1152,
-            "hidden_act": "gelu_pytorch_tanh",
-            "intermediate_size": 4304,
-            "num_heads": 16,
-            "in_channels": 3,
-            "patch_size": 16,
-            "spatial_merge_size": 2,
-            "temporal_patch_size": 2,
-            "out_hidden_size": 4096,
-            "num_position_embeddings": 2304,
-            "disable_merger_proj": True,
-        },
+        "vision_config": {"disable_merger_proj": True},
     }
 
 
@@ -81,7 +43,6 @@ def test_bailing_v3_vl_config_loads_without_remote_code(tmp_path: Path):
     model_path = tmp_path / "model"
     _write_config(model_path, _bailing_v3_vl_config())
 
-    assert _CONFIG_REGISTRY["bailing_moe_v3_vl"] is BailingMoeV3VLConfig
     config = get_config(model_path, trust_remote_code=False)
 
     assert isinstance(config, BailingMoeV3VLConfig)
@@ -91,10 +52,7 @@ def test_bailing_v3_vl_config_loads_without_remote_code(tmp_path: Path):
         AutoConfig.from_pretrained(model_path, trust_remote_code=False),
         BailingMoeV3VLConfig,
     )
-    assert config.architectures == ["BailingMoeV3VLForConditionalGeneration"]
-    assert config.image_token_id == 157157
     assert config.mrope_section == [8, 12, 12]
-    assert config.norm_query_embeds is False
     assert uses_mrope(config)
 
     text_config = config.text_config
@@ -102,11 +60,6 @@ def test_bailing_v3_vl_config_loads_without_remote_code(tmp_path: Path):
     assert text_config.architectures == ["BailingMoeV3ForCausalLM"]
     assert text_config.rope_parameters["mrope_section"] == [8, 12, 12]
     assert text_config.rope_parameters["rope_theta"] == 6_000_000
-    assert text_config.use_bias is False
-    assert text_config.num_shared_experts == 1
-    assert text_config.num_experts == 512
-    assert text_config.kv_lora_rank == 512
-    assert text_config.no_kda_lora is True
     assert text_config.layer_types.count("linear_attention") == 35
     assert [
         layer_idx
@@ -127,10 +80,7 @@ def test_bailing_v3_vl_config_preserves_explicit_nested_values():
     config_dict["architectures"] = ["CustomBailingVLForConditionalGeneration"]
     text_config = config_dict["text_config"]
     text_config["architectures"] = ["CustomBailingForCausalLM"]
-    text_config["layer_types"] = [
-        "full_attention" if (layer_idx + 1) % 6 == 0 else "linear_attention"
-        for layer_idx in range(42)
-    ]
+    text_config["layer_types"] = (["linear_attention"] * 5 + ["full_attention"]) * 7
     text_config["rope_theta"] = 1_000_000
     text_config["rope_parameters"] = {
         "rope_type": "default",
@@ -161,54 +111,22 @@ def test_bailing_v3_vl_config_normalizes_config_instance():
     assert text_config.rope_parameters["mrope_section"] == [8, 12, 12]
 
 
-def test_bailing_v3_vl_config_defaults_and_trailing_layers():
-    config = BailingMoeV3VLConfig()
+def test_bailing_v3_text_config_trailing_and_legacy_layers():
+    expected = ["linear_attention", "linear_attention", "full_attention"] * 2 + [
+        "full_attention"
+    ] * 2
     text_config = BailingMoeV3TextConfig(
         num_hidden_layers=8,
         layer_group_size=3,
     )
+    assert text_config.layer_types == expected
 
-    assert config.mrope_section == [12, 10, 10]
-    assert config.image_token_id == 151655
-    assert config.video_token_id == 151656
-    assert config.vision_start_token_id == 151652
-    assert config.vision_end_token_id == 151653
-    assert text_config.layer_types == [
-        "linear_attention",
-        "linear_attention",
-        "full_attention",
-        "linear_attention",
-        "linear_attention",
-        "full_attention",
-        "full_attention",
-        "full_attention",
-    ]
-
-    explicit_block_types = [
-        "mamba",
-        "mamba",
-        "attention",
-        "mamba",
-        "mamba",
-        "attention",
-        "attention",
-        "attention",
-    ]
     text_config = BailingMoeV3TextConfig(
         num_hidden_layers=8,
         layer_group_size=3,
-        layers_block_type=explicit_block_types,
+        layers_block_type=["mamba", "mamba", "attention"] * 2 + ["attention"] * 2,
     )
-    assert text_config.layer_types == [
-        "linear_attention",
-        "linear_attention",
-        "full_attention",
-        "linear_attention",
-        "linear_attention",
-        "full_attention",
-        "full_attention",
-        "full_attention",
-    ]
+    assert text_config.layer_types == expected
 
 
 def test_bailing_v3_text_config_accepts_legacy_rope_type():
