@@ -480,7 +480,7 @@ mbstrdecoder==1.1.3
     #   dataproperty
     #   pytablewriter
     #   typepy
-mcp==2.1.1
+mcp==2.2.0
     # via -r requirements/test/../common.txt
 mcp-types==2.1.1
     # via mcp
